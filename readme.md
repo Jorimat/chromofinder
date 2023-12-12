@@ -1,6 +1,6 @@
 # Goal
 
-Detect objects, like chromosomes, in images.
+Detect small objects, like chromosomes, in images.
 
 # TO DO
 
