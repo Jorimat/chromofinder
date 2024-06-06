@@ -1,438 +1,438 @@
-import glob, os, shutil, re, random
-import matplotlib.pyplot as plt
+# -*- coding: utf-8 -*-
 import numpy as np
-import h5py
+import copy
+import skimage.morphology as morph
+import skimage.measure as measure
+import skimage.filters as filters
+from itertools import repeat
+from scipy.spatial.distance import cdist
+from scipy.optimize import linear_sum_assignment
+import skimage.io as io
 import cv2
-import scipy.ndimage as snd
-import tensorflow as tf
-import tensorflow.keras.layers as layers
-import keras
+import os
+from itertools import chain
 
+# round up numbers
+def round_up(number):
+    if round(number) < number:
+        new_number = round(number)+1
+    else:
+        new_number = round(number)
+    return new_number
 
+# determine unique values in list + amount
+def unique_values(lijst):
+    # dictionary with genus as key and amount as value
+    unique = {}
+    for value in lijst:
+        # check if value is already in dictionary
+        if value not in unique.keys():
+            # number of times value appears in list
+            n = lijst.count(value)
+            unique[value] = n
+    return unique
 
+# find genus of plant from which chromosomes originate
+def genus_finder(external_id):
+    if "IL" in external_id:
+        genus = "Ilex"
+    else:
+        genus = external_id[:external_id.find("_")]
+    return(genus)
 
-def extractXml(fileXml):
-    '''
-    Extract info from an xml file, the silly way.
-    '''
-    
-    tags = ['xmin', 'xmax', 'ymin', 'ymax', 'name']
-    res = {}
-    for tag in tags:
-        res[tag] = []
-    res['n_obj'] = 0
-
-    with open(fileXml) as file_:
-        lines = file_.readlines()
-        for line in lines:
-            for tag in tags:
-                if f"<{tag}>" in line:
-                    value = line.split(f"<{tag}>")[1].split(f"</{tag}>")[0]
-                    # print(tag, value, line)
-                    res[tag] += [value]
-                    if tag == 'name':
-                        res['n_obj'] += 1
-
-    return res
-
-
-def extractTxt(fileTxt, w, h):
-
-    with open(fileTxt) as file_:
-        lines = file_.readlines()
+# remove image(s) with abnormal size
+def remove_image(dt, width, height):
+    dt_copy = copy.deepcopy(dt)
+    for i in range(len(dt)):
+        w = dt[i]["media_attributes"]["width"]
+        h = dt[i]["media_attributes"]["height"]
+        if w == width and h == height:
+            dt_copy.remove(dt[i])
+    return(dt_copy)
             
-    res = []
+# only keep annotations that were last reviewed
+def real_annotations(annotated_data, PROJECT_ID):
+    annotated_data_real = copy.deepcopy(annotated_data)
+    for i in range(len(annotated_data)):
+        annotated = annotated_data[i]["projects"][PROJECT_ID]["labels"]
+        nr_annotated = len(annotated)
+        name = annotated_data[i]["data_row"]["external_id"]
+        # check whether image is multiple times annotated 
+        if nr_annotated>1:
+            print(name, "has", nr_annotated, "different annotated images.")
+            removed = []
+            dates = {}
+            for j in range(nr_annotated):
+                skipped = annotated[j]["performance_details"]["skipped"]
+                nr_objects = len(annotated[j]["annotations"]["objects"])
+                # check if annotated image is really labelled
+                if skipped:
+                    removed.append(j)
+                    print("Annotated image",j,"of image", name,"is skipped and contains", nr_objects, "objects.")
+            # find last reviewed annotations
+                else:
+                    nr_reviewed = len(annotated[j]["label_details"]["reviews"])
+                    dates_reviewed = []
+                    for n in range(nr_reviewed):
+                        # find out the date
+                        reviewed_at = annotated[j]["label_details"]["reviews"][n]["reviewed_at"]
+                        date = reviewed_at[:reviewed_at.find("T")]+" "+reviewed_at[reviewed_at.find("T")+1:reviewed_at.find(".")]
+                        dates_reviewed.append(date)
+                    # sort the dates and only keep last reviewed
+                    dates_reviewed_sorted = sorted(dates_reviewed)
+                    date_last_reviewed = dates_reviewed_sorted[-1]
+                    dates[date_last_reviewed] = j
+                    if nr_reviewed > 1:
+                        print("Annotated image",j,"of image", name,"is reviewed",nr_reviewed, "times.")
+                        print(dates_reviewed_sorted)
+                        print(date_last_reviewed)
+                        
+            # sort annotations by date
+            dates_sorted = dict(sorted(dates.items())) 
+            print(dates_sorted) 
+            # make list of annotations that are not the newest
+            removed.extend(list(dates_sorted.values())[:-1]) 
+            # remove annotations that are not the newest
+            removed.sort(reverse=True) 
+            print(removed)            
+            for index in removed:
+                del(annotated_data_real[i]["projects"][PROJECT_ID]["labels"][index])
+    return(annotated_data_real)
 
-    for line in lines:
-    
-        values = [float(x) for x in line.strip('\n').split(' ')]
+def real_annotations2(annotated_data, PROJECT_ID):
+    annotated_data_real = copy.deepcopy(annotated_data)
+    for i in range(len(annotated_data)):
+        annotated = annotated_data[i]["projects"][PROJECT_ID]["labels"]
+        nr_annotated = len(annotated)
+        name = annotated_data[i]["data_row"]["external_id"]
+        # check whether image is multiple times annotated 
+        if nr_annotated>1:
+            print(name, "has", nr_annotated, "different annotated images.")
+            removed = []
+            dates = {}
+            for j in range(nr_annotated):
+                skipped = annotated[j]["performance_details"]["skipped"]
+                nr_objects = len(annotated[j]["annotations"]["objects"])
+                # check if annotated image is really labelled
+                if skipped:
+                    removed.append(j)
+                    print("Annotated image",j,"of image", name,"is skipped and contains", nr_objects, "objects.")
+            # find last reviewed annotations
+                else:
+                    reviewed_at = annotated[j]["label_details"]["reviews"][-1]["reviewed_at"]
+                    date = reviewed_at[:reviewed_at.find("T")]+" "+reviewed_at[reviewed_at.find("T")+1:reviewed_at.find(".")]
+                    dates[date] = j
+            # sort annotations by date
+            dates_sorted = dict(sorted(dates.items())) 
+            print(dates_sorted) 
+            # make list of annotations that are not the newest
+            removed.extend(list(dates_sorted.values())[:-1]) 
+            # remove annotations that are not the newest
+            removed.sort(reverse=True) 
+            print(removed)            
+            for index in removed:
+                del(annotated_data_real[i]["projects"][PROJECT_ID]["labels"][index])
+    return(annotated_data_real)
 
-        hmin = int((values[1]*h - values[3]*h/2))
-        vmin = int((values[2]*w - values[4]*w/2))
-        hmax = int((values[1]*h + values[3]*h/2))
-        vmax = int((values[2]*w + values[4]*w/2))
-        label_num = str(int(values[0]))
+# dictionary with name and coordinates of annotations
+def annotations(annotated_data, PROJECT_ID, rescale_annotations):
+    dict_annotations = {}
+    if rescale_annotations:
+        width = int(input("Rescale to width:"))
+        height = int(input("Rescale to height:"))
+    for i in range(len(annotated_data)):
+        name = annotated_data[i]["data_row"]["external_id"]
+        w = annotated_data[i]["media_attributes"]["width"]
+        h = annotated_data[i]["media_attributes"]["height"]
+        # save coordinates of annotations
+        path_points = annotated_data[i]["projects"][PROJECT_ID]["labels"][0]["annotations"]["objects"]
+        if rescale_annotations:
+            # resize coordinates 
+            points = list((((path_points[k]["point"]["x"])*(width/w)),((path_points[k]["point"]["y"]))*(height/h)) 
+                          for k in (range(len(path_points))))  
+        else:
+            points = list((path_points[k]["point"]["x"],path_points[k]["point"]["y"]) 
+                          for k in (range(len(path_points))))
+        dict_annotations[name] = points 
+    return dict_annotations
+
+# list with names of images
+def external_id(annotated_data, PROJECT_ID):
+    external_ids = []
+    for i in range(len(annotated_data)):
+        external_id = annotated_data[i]["data_row"]["external_id"]
+        external_ids.append(external_id)
+    return external_ids
+
+
+# chromosome number of Lavundula
+def chromosome_nr_Lavandula(name):
+    if name == "Lavendel_L4":
+        chromosome_nr = 44
+        genotype = "L. dentata 'Ploughmen's blue'"
+    elif name == "Lavendel_L3":
+        chromosome_nr = 44 
+        genotype = "L. dentata var. candicans"
+    elif name == "Lavendel_L27":
+        chromosome_nr = 28 
+        genotype = "L. stoechas 'Kew Red"
+    elif name == "Lavendel_L104":
+        chromosome_nr = 48  
+        genotype = "L. stoechas 'Van Gogh's babies'"
+    elif name == "Lavendel_L108":
+        chromosome_nr = 50 
+        genotype = "L. lanata"               
+    elif name == "Lavendel_L126":
+        chromosome_nr =  22
+        genotype = "L. multifida"
         
-        res += [{
-            'xmin' : hmin,
-            'ymin' : vmin,
-            'xmax' : hmax, 
-            'ymax' : vmax,
-            'label_num' : label_num
-        }]
-
-    return res
-
-
+    return(chromosome_nr, genotype)
+        
+# Gaussian blob
 def gaussian_blob(x, y, A, x0, y0, sigma_x, sigma_y):
     '''Calculate the values of an unrotated Gauss function given positions
     in x and y in a mesh grid'''
-    return A*np.exp(-(x-x0)**2/(2*sigma_x**2) -(y-y0)**2/(2*sigma_y**2)).transpose()
+    return A*np.exp(-(x-x0)**2/(2*sigma_x**2) -(y-y0)**2/(2*sigma_y**2))
 
+# pre-processing
+def preprocessing(image):
+    image = filters.median(filters.unsharp_mask(image))
+    threshold = filters.threshold_otsu(image)
+    objects = (image>threshold)
+    objects_labelled = measure.label(objects, background=0)
+    return objects_labelled
 
-
-def make_data_one_file_central(
-    files,
-    w_out,
-    h_out,
-    n_pos_crops_per_image,
-    n_neg_crops_per_image,
-    max_tries = 1000,
-    plot_everything = False
-):
-
-    # Load images
-    imgBefore = plt.imread(files['fileJpgBefore'])
-    img       = plt.imread(files['fileJpg'])
-    imgAfter  = plt.imread(files['fileJpgAfter']) 
+# identify single chromosomes
+def identification_chromosomes(objects_labelled, coordinates, 
+                       min_distance, min_area, max_area,max_area_bbox, max_area_diff):
     
-    # Make full size features
-    diff = 2*img - imgBefore - imgAfter
-    features_full = np.concatenate([img, diff], axis = 2)
-
-    # Load labels
-    labels = extractTxt(files['fileTxt'], img.shape[0], img.shape[1])  
+    single_chromosomes = []
     
-    # Make full size target
-    target_full = np.zeros(img.shape[:2])
+    objects_props = measure.regionprops(objects_labelled)
+    for label in objects_props:
+        area = label.area
+        area_bbox = label.area_bbox
+        centroid = tuple(list(label.centroid)[::-1])
+        distances = cdist(coordinates, list(tuple(repeat(centroid,len(coordinates)))))
+        area_diff = area_bbox-area
 
-    for label in labels:
+        if np.min(distances)<min_distance and area<max_area and area>min_area and area_bbox<max_area_bbox and area_diff<max_area_diff:
+            single_chromosomes.append(label)
+    
+    return single_chromosomes
 
-        xmin = label['xmin']
-        xmax = label['xmax']
-        ymin = label['ymin']
-        ymax = label['ymax']
-
-        xmid = int((xmin+xmax)/2)
-        ymid = int((ymin+ymax)/2)
-
-        x = np.linspace(0,img.shape[0]-1,img.shape[0])
-        y = np.linspace(0,img.shape[1]-1,img.shape[1])
-
-        x0 = xmid
-        y0 = ymid
-
-        radius_blob = ((xmax-xmin)+(ymax-ymin))/2    
-        sig = radius_blob/2
-
-        A = 1
-        Xg, Yg = np.meshgrid(x, y)
-        target_full += gaussian_blob(Xg, Yg, A, y0, x0, sig, sig)
+# optimal paramaters for extraction of single chromosomes
+def optimal_parameters(genus):
+    if genus == "Ilex":
+        min_distance = 50*2
+        min_area = 200*4
+        max_area = 600*4
+        max_area_bbox = 800*4
+        max_area_diff = 250*4
+    
+    if genus == "Agapanthus":
+        min_distance = 100*2
+        min_area = 2000*4
+        max_area = 7000*4
+        max_area_bbox = 8000*4
+        max_area_diff = 3000*4
         
-    target_full /= target_full.max()
-    
-    if plot_everything:
-        plt.figure(figsize=(15,10))
-        plt.subplot(131)
-        plt.imshow(features_full[:,:,:3])
-        plt.subplot(132)
-        plt.imshow(features_full[:,:,3:])
-        plt.subplot(133)
-        plt.imshow(target_full)
-        plt.show()
-    
-    
-    # Make random crops of features and target
-    pos_feats = []
-    neg_feats = []
-    pos_trgs  = []
-    neg_trgs  = []
-    
-    counter = 0
-    
-    while (len(pos_feats) < n_pos_crops_per_image or len(neg_feats) < n_neg_crops_per_image) and counter < max_tries:
+    if genus == "Geranium":
+        min_distance = 50*2
+        min_area = 200*4
+        max_area = 2000*4
+        max_area_bbox = 2200*4
+        max_area_diff = 400*4
         
-        counter += 1
+    if genus == "Persicaria":
+        min_distance = 50*2
+        min_area = 200*4
+        max_area = 2800*4
+        max_area_bbox = 3000*4
+        max_area_diff = 500*4
+    
+    if genus == "Salvia":
+        min_distance = 50*2
+        min_area = 1000*4
+        max_area = 3500*4
+        max_area_bbox = 4000*4
+        max_area_diff = 800*4
 
-        x_min_crop = np.random.randint(0, features_full.shape[0]-w_out)
-        y_min_crop = np.random.randint(0, features_full.shape[1]-h_out)
+    if genus == "Thalictrum":
+        min_distance = 50*2
+        min_area = 500*4
+        max_area = 2000*4
+        max_area_bbox = 2200*4
+        max_area_diff = 400*4
+        
+    return min_distance, min_area, max_area, max_area_bbox, max_area_diff
 
-        features_crop = features_full[x_min_crop:x_min_crop+w_out, y_min_crop:y_min_crop+h_out, :]
-        target_crop   =   target_full[x_min_crop:x_min_crop+w_out, y_min_crop:y_min_crop+h_out]
+# baseline
+def baseline(list_images, list_coordinates_real, list_genera, order_processing, processing_techniques , resize=False):
+    dict_chromosome_number = {"Genus":[], "Actual chromosome number":[], "Predicted chromosome number":[]}
+    list_coordinates_predicted = []
+    
+    if resize:
+        width = int(input("Rescale to width:"))
+        height = int(input("Rescale to height:"))
+        
+    
+    for i in range(len(list_images)):
+        genus = list_genera[i]
+        im = list_images[i]
+
+        if resize:
+            # resize image
+            im = cv2.resize(im,(width, height))
             
-        if target_crop.max() == 1:
-            if len(pos_feats) < n_pos_crops_per_image:
-                pos_feats += [features_crop]
-                pos_trgs  += [target_crop]
-                
-        else:
-            if len(neg_feats) < n_neg_crops_per_image:
-                target_crop = np.zeros(target_crop.shape) 
-                neg_feats += [features_crop]
-                neg_trgs  += [target_crop]
-                
-                
-    # Append
-    features_array = np.array(pos_feats + neg_feats)/255
-    target_array   = np.array(pos_trgs + neg_trgs)
-    
-    if plot_everything:
-        for i in range(features_array.shape[0]):
-            plt.figure(figsize=(15,10))
-            plt.subplot(131)
-            plt.imshow(features_array[i,:,:,:3])
-            plt.subplot(132)
-            plt.imshow(features_array[i,:,:,3:])
-            plt.subplot(133)
-            plt.imshow(target_array[i,:,:])
-            plt.show()
-    
-    return features_array, target_array
-
-
-
-def make_data_central(
-    files,
-    w_out, 
-    h_out,
-    n_pos_crops_per_image,
-    n_neg_crops_per_image,
-    fileHDF,
-    plot_everything = False
-):
-    
-    c_feat = 6
-    n_per_file = (n_pos_crops_per_image+n_neg_crops_per_image)
-    n_instances = len(files)*n_per_file
-
-    # Start HDF5 file
-    db = h5py.File(fileHDF, 'w')
-    features = db.create_dataset('features', (n_instances, w_out, h_out, c_feat), dtype='float32') 
-    targets  = db.create_dataset('targets',  (n_instances, w_out, h_out), dtype='float32') 
-
-    # Make features and targets for all files
-    for f in range(len(files)):
-        print(f, '/', len(files))
-        # print(files[f])
-        features_array, target_array = make_data_one_file_central(
-            files[f],
-            w_out,
-            h_out,
-            n_pos_crops_per_image,
-            n_neg_crops_per_image,
-            max_tries = 1000,
-            plot_everything = plot_everything
-        )
-
-        # Store in HDF5 file
-        # print('features_array:', features_array.shape)
-        n_inst = features_array.shape[0]
-        features[f*n_per_file:f*n_per_file+n_inst, :, :, :]  = features_array
-        targets [f*n_per_file:f*n_per_file+n_inst, :, :]     = target_array
+        # determine real chromsome number
+        n_chromosomes_real = len(list_coordinates_real[i])  
         
-        # WARNING: Some features and targets full of zeroes may remain
-
-    # Close HDF5 file
-    db.close()
-
-
-    
-    
-# WARNING: This generator loops forever; set a steps_per_epoch in model.fit
-
-# def create_hdf5_generator(db_path, batch_size):
-#     db = h5py.File(db_path, 'r')
-#     db_size = db['features'].shape[0]
-#     while True: # loop through the dataset indefinitely
-#         for i in np.arange(0, db_size, batch_size):
-#             images  = db['features'][i:i+batch_size]
-#             targets = db['targets'] [i:i+batch_size]
-#             yield images, targets
-
-def create_hdf5_generator(db_path, batch_size, keys):
-    db = h5py.File(db_path, 'r')
-    db_size = db[keys[0]].shape[0]
-    while True: 
-        for i in np.arange(0, db_size, batch_size):
-            res = []
-            for key in keys:
-                res += [db[key][i:i+batch_size]]
-            if len(keys) == 1:
-                yield res[0]
-            elif len(keys) > 1:
-                yield tuple(res)
-
-
-
+        # calculate chromosome number via segmentation after image preprocessing
+        chromosomes = baseline_processing(im, order_processing, processing_techniques)
+        chromosomes_feats = measure.regionprops(chromosomes)
+        n_chromosomes_predicted = len(chromosomes_feats)
+        
+        #determine position of predicted chromosomes
+        predicted_positions = list((rp.centroid[1], rp.centroid[0]) for rp in chromosomes_feats)
             
-            
-def calculate_batch_size(side):
-
-    if side == 256:
-        if os.environ["CUDA_VISIBLE_DEVICES"]=="7":
-            batch_size = 16
-        elif os.environ["CUDA_VISIBLE_DEVICES"] in ["0", "1"]:
-            batch_size = 32
-            
-    if side == 512:
-        if os.environ["CUDA_VISIBLE_DEVICES"]=="7":
-            batch_size = 8
-        elif os.environ["CUDA_VISIBLE_DEVICES"] in ["0", "1"]:
-            batch_size = 16
-    
-    elif side == 1024:
-        if os.environ["CUDA_VISIBLE_DEVICES"]=="7":
-            batch_size = 4
-        elif os.environ["CUDA_VISIBLE_DEVICES"] in ["0", "1"]:
-            batch_size = 8
-    
-    elif side  == 2048:
-        if os.environ["CUDA_VISIBLE_DEVICES"] in ["0", "1"]:
-            batch_size = 2
+       # add name of picture, genus and chromosome number to dictionary
+        dict_chromosome_number["Genus"].append(genus)
+        dict_chromosome_number["Actual chromosome number"].append(n_chromosomes_real)
+        dict_chromosome_number["Predicted chromosome number"].append(n_chromosomes_predicted)
+        # add name of image, position of predicted chromosomes to dictionary
+        list_coordinates_predicted.append(predicted_positions)
         
-    if not 'batch_size' in locals():
-        print('WARNING: Using default batch_size 2.')
-        batch_size = 2
-        
-    return batch_size
+    return dict_chromosome_number, list_coordinates_predicted
 
+def baseline_processing(im, order_processing, processing_techniques):
+    radius = processing_techniques["unsharp masking"]["radius"]
+    amount = processing_techniques["unsharp masking"]["amount"]
+    im = filters.unsharp_mask(im, radius=radius, amount=amount)
+    #footprint = processing_techniques["median"]["footprint"]
+    #im = filters.median(im,footprint=footprint)
+    th_otsu = filters.threshold_otsu(im)
+    im = (im > th_otsu)
+    for technique in order_processing:
+        footprint = processing_techniques[technique]["footprint"]
+        if technique == "erosion":
+            im = morph.binary_erosion(im,footprint=footprint)
+        elif technique == "dilation":
+            im = morph.binary_dilation(im,footprint=footprint)
+        elif technique == "opening":
+            im = morph.binary_opening(im,footprint=footprint)
+        elif technique == "closing":
+            im = morph.binary_closing(im,footprint=footprint)
+    chromosomes = measure.label(im, background=0)
 
+    return chromosomes
 
-# def initiate_model_old(data_augmentation=False):
-    
-#     inputs = tf.keras.layers.Input((h_img, w_img, c_feat))
-
-#     # Augmentation
-#     if type(data_augmentation) == bool and data_augmentation == False:
-#         print('No data augmentation.')
-#     elif type(data_augmentation) == keras.engine.sequential.Sequential:
-#         inputs = data_augmentation(inputs)
-#     else:
-#         print('WARNING: Illegal data_augmentation type.')
-        
-#     # Contraction path
-#     c1 = tf.keras.layers.Conv2D(16, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(inputs)
-#     c1 = tf.keras.layers.Dropout(0.1)(c1)
-#     c1 = tf.keras.layers.Conv2D(16, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c1)
-#     b1 = tf.keras.layers.BatchNormalization()(c1)
-#     r1 = tf.keras.layers.ReLU()(b1)
-#     p1 = tf.keras.layers.MaxPooling2D((2, 2))(r1)
-
-#     c2 = tf.keras.layers.Conv2D(32, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p1)
-#     c2 = tf.keras.layers.Dropout(0.1)(c2)
-#     c2 = tf.keras.layers.Conv2D(32, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c2)
-#     b2 = tf.keras.layers.BatchNormalization()(c2)
-#     r2 = tf.keras.layers.ReLU()(b2)
-#     p2 = tf.keras.layers.MaxPooling2D((2, 2))(r2)
-
-#     c3 = tf.keras.layers.Conv2D(64, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p2)
-#     c3 = tf.keras.layers.Dropout(0.2)(c3)
-#     c3 = tf.keras.layers.Conv2D(64, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c3)
-#     b3 = tf.keras.layers.BatchNormalization()(c3)
-#     r3 = tf.keras.layers.ReLU()(b3)
-#     p3 = tf.keras.layers.MaxPooling2D((2, 2))(r3)
-
-#     c4 = tf.keras.layers.Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p3)
-#     c4 = tf.keras.layers.Dropout(0.2)(c4)
-#     c4 = tf.keras.layers.Conv2D(128, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c4)
-#     b4 = tf.keras.layers.BatchNormalization()(c4)
-#     r4 = tf.keras.layers.ReLU()(b4)
-#     p4 = tf.keras.layers.MaxPooling2D(pool_size=(2, 2))(r4)
-
-#     c5 = tf.keras.layers.Conv2D(256, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p4)
-#     b5 = tf.keras.layers.BatchNormalization()(c5)
-#     r5 = tf.keras.layers.ReLU()(b5)
-#     c5 = tf.keras.layers.Dropout(0.3)(r5)
-#     c5 = tf.keras.layers.Conv2D(256, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c5)
-
-#     # Expansive path 
-#     u6 = tf.keras.layers.Conv2DTranspose(128, (2, 2), strides=(2, 2), padding='same')(c5)
-#     u6 = tf.keras.layers.concatenate([u6, c4])
-#     u6 = tf.keras.layers.BatchNormalization()(u6)
-#     u6 = tf.keras.layers.ReLU()(u6)
-
-#     u7 = tf.keras.layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same')(u6)
-#     u7 = tf.keras.layers.concatenate([u7, c3])
-#     u7 = tf.keras.layers.BatchNormalization()(u7)
-#     u7 = tf.keras.layers.ReLU()(u7)
-
-#     u8 = tf.keras.layers.Conv2DTranspose(32, (2, 2), strides=(2, 2), padding='same')(u7)
-#     u8 = tf.keras.layers.concatenate([u8, c2])
-#     u8 = tf.keras.layers.BatchNormalization()(u8)
-#     u8 = tf.keras.layers.ReLU()(u8)
-
-#     u9 = tf.keras.layers.Conv2DTranspose(16, (2, 2), strides=(2, 2), padding='same')(u8)
-#     u9 = tf.keras.layers.concatenate([u9, c1], axis=3)
-#     u9 = tf.keras.layers.BatchNormalization()(u9)
-#     u9 = tf.keras.layers.ReLU()(u9)
-
-#     outputs = tf.keras.layers.Conv2D(num_classes, (1, 1), activation='sigmoid')(u9)
-
-#     model = tf.keras.Model(inputs=[inputs], outputs=[outputs])
-
-#     return model
-
-
-def initiate_model(
-    h_img,
-    w_img,
-    c_feat, 
-    num_classes,               
-    n_contractions,
-    data_augmentation=False):
-
-    depths = [2**(i+4) for i in range(n_contractions)]
-
-    # Input layer
-    inputs = tf.keras.layers.Input((h_img, w_img, c_feat))
-
-    # Augmentation
-    if type(data_augmentation) == bool and data_augmentation == False:
-        print('No data augmentation.')
-    elif type(data_augmentation) == keras.engine.sequential.Sequential:
-        inputs = data_augmentation(inputs)
+# criteria (= median width) to determine if two points are close enough together for the determination of the evaluation metrics
+def criteria_evaluation_metric(genus):
+    if genus == "Agapanthus":
+        criteria = 88
+    elif genus == "Geranium":
+        criteria = 39
+    elif genus == "Persicaria":
+        criteria = 44
+    elif genus == "Salvia":
+        criteria = 53
+    elif genus == "Thalictrum":
+        criteria = 50
+    elif genus == "Ilex":
+        criteria = 41
     else:
-        print('WARNING: Illegal data_augmentation type.')
-
-    # List to store layers (c) for skip connections
-    skip_layers = []
-
-    # Contraction path
-    p = inputs
-
-    for depth in depths[:-1]:
-        # print('depth', depth)
-        c = tf.keras.layers.Conv2D(depth, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p)
-        c = tf.keras.layers.Dropout(0.1)(c)
-        c = tf.keras.layers.Conv2D(depth, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c)
-        b = tf.keras.layers.BatchNormalization()(c)
-        r = tf.keras.layers.ReLU()(b)
-        p = tf.keras.layers.MaxPooling2D((2, 2))(r)
-
-        skip_layers += [c] # "push"
+        print("The critria for the given genus is not known") 
+    return criteria
         
-    # One last contraction block
-    depth = depths[-1]
-    # print('depth', depth)
+# find best match between two sets of points by minimising the sum of the distances (Hungarian algorithm)
+def find_best_matches(points1, points2):
     
-    c = tf.keras.layers.Conv2D(depth, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(p)
-    b = tf.keras.layers.BatchNormalization()(c)
-    r = tf.keras.layers.ReLU()(b)
-    c = tf.keras.layers.Dropout(0.3)(r)
-    c = tf.keras.layers.Conv2D(depth, (3, 3), activation='relu', kernel_initializer='he_normal', padding='same')(c)
-
-    # skip_layers += [c] # "push"
-
-
-    # Expansive path 
-    u = c
+    # calculate distance matrix
+    distance_matrix = cdist(points1, points2)
     
-    for depth in depths[::-1][1:]:
+    # solve the linear sum assignment problem: find the correct matches by minimizing the sum of the distances
+    row_ind, col_ind = linear_sum_assignment(distance_matrix)
+    
+    # find the coordinates corresponding with the correct matches
+    #best_matches = [(points1[i],points2[j]) for i, j in zip(row_ind, col_ind)]
+    distances_best_matches = [distance_matrix[i,j] for i, j in zip(row_ind, col_ind)]
+    
+    return distances_best_matches
 
-        # skip_layers = skip_layers[:-1] # "pop"
-        u = tf.keras.layers.Conv2DTranspose(depth, (2, 2), strides=(2, 2), padding='same')(u)
-        u = tf.keras.layers.concatenate([u, skip_layers[-1]])
-        u = tf.keras.layers.BatchNormalization()(u)
-        u = tf.keras.layers.ReLU()(u)
-        
-        skip_layers = skip_layers[:-1] # "pop"
-        
+# calculate true positives (used in calculation of evalution metrics)
+def calculate_true_positives(distances_best_matches, genus):
+    criteria = criteria_evaluation_metric(genus)
+    true_positives = sum([distances_best_matches[i] < criteria for i in range(len(distances_best_matches))])
+    return true_positives
 
-    # Sigmoid layer
-    outputs = tf.keras.layers.Conv2D(num_classes, (1, 1), activation='sigmoid')(u)
+# evaluation metrics
 
-    # Put model together
-    model = tf.keras.Model(inputs=[inputs], outputs=[outputs])
-    # model = tf.keras.Model(inputs=[inputs], outputs=[u])
+# calculate recall for one image
+def recall(coordinates_real, coordinates_predicted, genus):
+    distances_best_matches = find_best_matches(coordinates_real, coordinates_predicted)
+    TP = calculate_true_positives(distances_best_matches, genus)
+    FN = len(coordinates_real)-TP
+    recall_score = TP/(TP+FN)
+    return recall_score
 
-    return model
+# calculate precision for one image
+def precision(coordinates_real, coordinates_predicted, genus):
+    distances_best_matches = find_best_matches(coordinates_real, coordinates_predicted)
+    TP = calculate_true_positives(distances_best_matches, genus)
+    FP = len(coordinates_predicted)-TP
+    precision_score = TP/(TP+FP)
+    return precision_score
+
+# calculate f1 for one image
+def F1(coordinates_real, coordinates_predicted, genus):
+    recall_score = recall(coordinates_real, coordinates_predicted, genus)
+    precision_score = precision(coordinates_real, coordinates_predicted, genus)
+    if precision_score == 0 or recall_score == 0:
+        F1_score = 0
+    else:
+        F1_score = (2*precision_score*recall_score)/(precision_score+recall_score)
+    return F1_score
+
+
+# extract all values from nested dictionary
+def values_dict(d):
+    return list(chain.from_iterable(
+        [values_dict(v) if isinstance(v, dict) else [v]
+         if isinstance(v, str) else v for v in d.values()]))
+
+
+
+def set_size(width, fraction=1):
+    """Set figure dimensions to avoid scaling in LaTeX.
+
+    Parameters
+    ----------
+    width: float
+            Document textwidth or columnwidth in pts
+    fraction: float, optional
+            Fraction of the width which you wish the figure to occupy
+
+    Returns
+    -------
+    fig_dim: tuple
+            Dimensions of figure in inches
+    """
+    # Width of figure (in pts)
+    fig_width_pt = width * fraction
+
+    # Convert from pt to inches
+    inches_per_pt = 1 / 72.27
+
+    # Golden ratio to set aesthetic figure height
+    # https://disq.us/p/2940ij3
+    golden_ratio = (5**.5 - 1) / 2
+
+    # Figure width in inches
+    fig_width_in = fig_width_pt * inches_per_pt
+    # Figure height in inches
+    fig_height_in = fig_width_in * golden_ratio
+
+    fig_dim = (fig_width_in, fig_height_in)
+
+    return fig_dim
