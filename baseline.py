@@ -11,91 +11,87 @@ import skimage.morphology as morph
 import skimage.measure as measure
 import skimage.filters as filters
 import skimage.exposure as exposure
-import glob
 import random
 from PIL import Image
-from scipy.spatial.distance import cdist
 import copy
+from itertools import chain
 from functions import *
 
+textwidth = 455.24411
+figsize=(set_size(textwidth, fraction=0.49)[0], set_size(textwidth, fraction=0.49)[0]*(2048/2688))
 
 #load data
+with open('2024-03-23\\TEST_Images_2.pkl','rb') as file:
+    images = pickle.load(file)
 
-PROJECT_ID = 'ckvcagl126z850z6ddufi2cqa'
+with open('2024-03-23\\TEST_Coordinates_2.pkl','rb') as file:
+    coordinates = pickle.load(file)  
 
-with open('Data_ANNOTATED.pickle', 'rb') as file:
-    Data_ANNOTATED = pickle.load(file)
-    
-remove_image(Data_ANNOTATED,1273,947)
-Data_ANNOTATED_real = real_annotations(Data_ANNOTATED, PROJECT_ID)
+with open('2024-03-23\\TEST_Genera_2.pkl','rb') as file:
+    genera = pickle.load(file)
     
 
-# PREDICTED CHROMOSOME NUMBER VIA SEGMENTATION (OTSU THRESHOLDING)
-dict_chromosomes = {"Name":[], "Genus":[], "Actual chromosome number":[], "Predicted chromosome number":[]}
-dict_predicted = {}
+# PREDICTED CHROMOSOME NUMBER VIA SEGMENTATION (OTSU THRESHOLDING) + PREDICTED POSITIONS
+processing_techniques = {"erosion":{"footprint":morph.square(9)},
+                         "dilation":{"footprint":None},
+                         "opening":{"footprint":morph.square(11)},
+                         "closing":{"footprint":None},
+                         "median":{"footprint":morph.square(9)},
+                         "unsharp masking":{"radius":30.0,"amount":1.0}}
 
-for i in range(len(Data_ANNOTATED_real)):
-    url = Data_ANNOTATED_real[i]["data_row"]["row_data"]
-    external_id = Data_ANNOTATED_real[i]["data_row"]["external_id"]
-    n_chromosomes = len(
-        Data_ANNOTATED_real[i]["projects"][PROJECT_ID]["labels"][0]["annotations"]["objects"])
-    genus = genus_finder(external_id)
-    
-    # calculate chromosome number via segmentation after image preprocessing
-    im = io.imread(url)[:, :, 0]
-    im_mf_uf = filters.median(filters.unsharp_mask(im))
-    th_otsu = filters.threshold_otsu(im_mf_uf)
-    chromosomes = (im_mf_uf > th_otsu)
-    chromosomes_oe = morph.opening(morph.erosion(chromosomes))
-    chromosomes_labelled = measure.label(chromosomes_oe, background=0)
-    chromosomes_props = measure.regionprops(chromosomes_labelled)
-    n_chromosomes_thresholding = len(chromosomes_props)
-    
-    #determine position of predicted chromosomes
-    predicted_positions = list((rp.centroid[1], rp.centroid[0]) for rp in chromosomes_props)
-        
-   # add name of picture, genus and chromosome number to dictionary
-    dict_chromosomes["Name"].append(external_id)
-    dict_chromosomes["Genus"].append(genus)
-    dict_chromosomes["Actual chromosome number"].append(n_chromosomes)
-    dict_chromosomes["Predicted chromosome number"].append(n_chromosomes_thresholding)
-    # add name of image, position of predicted chromosomes to dictionary
-    dict_predicted[external_id] = predicted_positions
+order_processing =  ["erosion", "opening"] 
+
+chromosome_number, positions_predicted = baseline(images, coordinates, genera, order_processing, processing_techniques)
+
+# ACTUAL POSITIONS
+positions_actual = coordinates
+
+genera_unique = ["Agapanthus", "Geranium", "Ilex", "Persicaria","Salvia", "Thalictrum"]
+dict_indices_genera = {}
+for genus in genera_unique:
+    dict_indices_genera[genus] = [i for i in range(len(chromosome_number["Genus"])) if chromosome_number["Genus"][i] == genus]
     
 
 # COMPARE PREDICTED CHROMOSOME NUMBER WITH ACTUAL CHROMSOME NUMBER
-dict_actual = annotations(Data_ANNOTATED_real,PROJECT_ID ,False)
 
 # VISUALLY
-# Plot predicted positions together with the actual  positions on image
-names = list(dict_actual.keys())
-name = random.choice(names)
-actual_points = dict_actual[name]
-predicted_points = dict_predicted[name]
+i = 50
+actual_points = positions_actual[i]
+predicted_points = positions_predicted[i]
+image = images[i]
+processed_image = baseline_processing(image, order_processing, processing_techniques)
 
-image = Image.open(os.path.join("ALL_images",name))
 plt.figure()
-plt.imshow(image)
-plt.scatter(*zip(*actual_points),s=15, c="g")
-plt.scatter(*zip(*predicted_points),s=15, c="r")
-plt.suptitle(name,x=0.5,y=0.95, size=15)
-plt.legend(["Actual", "Predicted"])
+plt.imshow(image, cmap="gray")
+plt.scatter(*zip(*actual_points),s=100, c="orange")
+plt.axis("off")
+plt.legend(["Actual chromosome"], fontsize="25")
+plt.figure()
+plt.imshow(processed_image, cmap="nipy_spectral")
+plt.scatter(*zip(*predicted_points),s=100, c="w", marker="X")
+plt.axis("off")
+plt.legend(["Predicted chromosome"], fontsize="25")
 
 # SCATTERPLOT
-fig = plt.figure()
-sp = sns.scatterplot(data=dict_chromosomes , 
-                     x="Actual chromosome number",
-                     y="Predicted chromosome number",
-                     hue="Genus")
-fig.add_axes(sp)
-n = np.linspace(0,max(dict_chromosomes["Actual chromosome number"]+dict_chromosomes["Predicted chromosome number"]),1000)
-sp.plot(n,n,'k-')
-fig.set_tight_layout(True)
+fig, ax = plt.subplots(figsize=(set_size(textwidth, fraction=1)))
+sns.scatterplot(data=chromosome_number, 
+                x="Actual chromosome number",
+                y="Predicted chromosome number",
+                hue="Genus",
+                hue_order=genera_unique,
+                ax=ax)
+ax.tick_params(axis='both', which='major', labelsize=12)
+ax.set_xlabel("Actual chromosome number", fontsize=12)
+ax.set_ylabel("Predicted chromosome number", fontsize=12)
+n = np.linspace(0, max(max(chromosome_number["Actual chromosome number"]), max(chromosome_number["Predicted chromosome number"])), 1000)
+ax.plot(n, n, 'k-')
+plt.show()
+plt.savefig("Afbeeldingen\Scatterplot baseline.pdf", format="pdf", bbox_inches='tight')
 
 # CONFUSION MATRIX
 cm = metrics.ConfusionMatrixDisplay.from_predictions(
-    dict_chromosomes["Actual chromosome number"],
-    dict_chromosomes["Predicted chromosome number"],
+    chromosome_number["Actual chromosome number"],
+    chromosome_number["Predicted chromosome number"],
     include_values=False, xticks_rotation='vertical')
 ax = cm.ax_
 fig = cm.figure_
@@ -104,79 +100,156 @@ ax.set_xticklabels(labels=cm.display_labels,fontsize=8)
 ax.set_yticklabels(labels=cm.display_labels,fontsize=8)
 
 # MEAN ABSOLUTE ERROR
-print("{:^40s}  {:^48s}  {:^24s}".format("NAME", "CHROMOSOME NUMBER", "DIFFERENCE"))
-print("{:^40s}  {:^24s}|{:^24s}".format( "", "MANUAL", "SEGMENTATION"))
+print("{:^48s}  {:^24s}".format("CHROMOSOME NUMBER", "DIFFERENCE"))
+print("{:^24s}|{:^24s}".format( "MANUAL", "SEGMENTATION"))
 print(116*"=")
-for i in range(len(reviewed)):
-    print("{:40s}  {:^24d} {:^24d}  {:^24d}".format(dict_chromosomes["Name"][i],
-          dict_chromosomes["Actual chromosome number"][i],dict_chromosomes["Predicted chromosome number"][i], 
-          dict_chromosomes["Actual chromosome number"][i]-dict_chromosomes["Predicted chromosome number"][i]))      
+for i in range(len(chromosome_number["Genus"])):
+    print("{:^24d} {:^24d} {:^24d}".format(
+          chromosome_number["Actual chromosome number"][i],chromosome_number["Predicted chromosome number"][i], 
+          chromosome_number["Actual chromosome number"][i]-chromosome_number["Predicted chromosome number"][i]))      
 print("De mean absolute error is:", 
-      metrics.mean_absolute_error(dict_chromosomes["Actual chromosome number"],dict_chromosomes["Predicted chromosome number"]))
+      metrics.mean_absolute_error(chromosome_number["Actual chromosome number"],chromosome_number["Predicted chromosome number"]))
+
+print("{:15s} {:1s} {:^10s}".format("GENUS","|", "MAE"))
+print(25*"=")
+for genus in dict_indices_genera.keys():
+    indices = dict_indices_genera[genus]
+    actual = [chromosome_number["Actual chromosome number"][i] for i in indices]
+    predicted = [chromosome_number["Predicted chromosome number"][i] for i in indices]
+    MAE = metrics.mean_absolute_error(actual,predicted)
+    print("{:15s} {:1s} {:^10.2f}".format(genus,"|", MAE))
+    
+# OVERESTIMATION/UNDERESTIMATION
+actual_numbers = list(chromosome_number["Actual chromosome number"])
+predicted_numbers = list(chromosome_number["Predicted chromosome number"])
+difference = []
+difference_abs = []
+for i in range(len(actual_numbers)):
+    actual_number = actual_numbers[i]
+    predicted_number = predicted_numbers[i]
+    difference_abs.append(abs(actual_number-predicted_number))
+    difference.append(actual_number-predicted_number)
+    
+print("Min difference:",np.min(difference_abs))
+print("Max difference:",np.max(difference_abs))
+print("Mean difference:",np.mean(difference_abs))
+print("Median difference:",np.median(difference_abs))
+
+print("Overestimation of the chromosome number:", len([i for i in difference if i < 0]))
+print("Underestimation of the chromosome number:", len([i for i in difference if i > 0]))
+print("Correct prediction:", len([i for i in difference if i == 0]))
 
 # RECALL - PRECISION - F1
-
-# RECALL
-dict_recall = {}
-for name in dict_actual.keys():
-    recall = 0
-    actual_positions = dict_actual[name]
-    predicted_positions = copy.deepcopy(dict_predicted[name])
-    for point in actual_positions:
-        if len(predicted_positions) > 0:
-            distances = cdist(np.array(predicted_positions).reshape(-1,2),np.array([point]))
-            min_distance = min(distances)
-            if min_distance < 10:
-                recall += 1
-                i = list(distances).index(min_distance)
-                del predicted_positions[i]
-    dict_recall[name] = recall/len(actual_positions)
+dict_evaluation_metrics = {"recall":{"All":[], "Agapanthus":[], "Geranium":[], "Ilex":[], "Persicaria":[],"Salvia":[], "Thalictrum":[]},
+                           "precision":{"All":[],"Agapanthus":[], "Geranium":[], "Ilex":[], "Persicaria":[],"Salvia":[], "Thalictrum":[]},
+                           "F1":{"All":[],"Agapanthus":[], "Geranium":[], "Ilex":[], "Persicaria":[],"Salvia":[], "Thalictrum":[]}}
     
-# PRECISION
-dict_precision = {}
-for name in dict_actual.keys():
-    precision = 0
-    actual_positions = copy.deepcopy(dict_actual[name])
-    predicted_positions = dict_predicted[name]
-    for point in predicted_positions:
-        if len(actual_positions) > 0:
-            distances = cdist(np.array(actual_positions).reshape(-1,2),np.array([point]))
-            min_distance = min(distances)
-            if min_distance < 10:
-                precision += 1
-                i = list(distances).index(min_distance)
-                del actual_positions[i]
-    dict_precision[name] = precision/len(predicted_positions)  
+for i in range(len(genera)):
+    genus = genera[i]
+    actual_positions = positions_actual[i]
+    predicted_positions = positions_predicted[i]
     
-# F1
-dict_F1 = {}
-for name in dict_recall.keys():
-    recall = dict_recall[name]
-    precision = dict_precision[name]
-    if precision or recall > 0:
-        F1 = (2*precision*recall)/(precision+recall)
-        dict_F1[name] = F1
-    else:
-        dict_F1[name] = 0
+    rec = recall(actual_positions, predicted_positions,genus)
+    prec = precision(actual_positions, predicted_positions,genus)
+    f1 = F1(actual_positions, predicted_positions,genus)
+    
+    dict_evaluation_metrics["recall"]["All"].append(rec)
+    dict_evaluation_metrics["precision"]["All"].append(prec)
+    dict_evaluation_metrics["F1"]["All"].append(f1)
+    dict_evaluation_metrics["recall"][genus].append(rec)
+    dict_evaluation_metrics["precision"][genus].append(prec)
+    dict_evaluation_metrics["F1"][genus].append(f1)
 
-# visualization
-recall = list(dict_recall.values())
-precision = list(dict_precision.values())
-F1 = list(dict_F1.values())
+# table of evaluation metrics
 
-print("The mean recall is:", np.mean(recall))
-print("The mean precision is:", np.mean(precision))
-print("The mean F1-value is:", np.mean(F1))
+print("{:15s} {:1s}{:^10s}{:^10s}{:^10s}{:^10s}{:^10s}{:^10s} ".format("GENUS","|", "RECALL","std", "PRECISION","std", "F1","std"))
+print(75*"=")
+for genus in genera_unique:
+    rec = np.mean(dict_evaluation_metrics["recall"][genus])
+    std_rec = np.std(dict_evaluation_metrics["recall"][genus])
+    prec = np.mean(dict_evaluation_metrics["precision"][genus])
+    std_prec = np.std(dict_evaluation_metrics["precision"][genus])
+    f1 = np.mean(dict_evaluation_metrics["F1"][genus])
+    std_f1 = np.std(dict_evaluation_metrics["F1"][genus])
+    print("{:15s} {:1s}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f} ".format(genus,"|", rec, std_rec, prec, std_prec, f1, std_f1))   
+print(75*"-")
+rec_all = dict_evaluation_metrics["recall"]["All"]
+prec_all = dict_evaluation_metrics["precision"]["All"]
+f1_all = dict_evaluation_metrics["F1"]["All"]
+print("{:15s} {:1s} {:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f} ".format("All","|", np.mean(rec_all), np.std(rec_all), np.mean(prec_all), np.std(prec_all), np.mean(f1_all), np.std(f1_all)))
 
-plt.figure()
-plt.boxplot([recall, precision, F1], 
-            labels=["Recall", "Precison","F1"])
+print("{:20s}{:1s}{:^10s}{:^10s}{:^10s}{:^10s}{:^10s}".format("","|", "MEAN","std", "MEDIAN","MIN","MAX"))
+print(70*"=")
+print("{:20s}{:1s}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}".format("precision","|",np.mean(prec_all),np.std(prec_all), np.median(prec_all), np.min(prec_all),np.max(prec_all)))
+print("{:20s}{:1s}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}".format("recall","|",np.mean(rec_all), np.std(rec_all), np.median(rec_all),np.min(rec_all),np.max(rec_all)))
+print("{:20s}{:1s}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}{:^10.2f}".format("F1-score","|",np.mean(f1_all),np.std(f1_all), np.median(f1_all),np.min(f1_all),np.max(f1_all)))
+
+
+# boxplot of evaluation metrcis
+fig, ax = plt.subplots(figsize=set_size(textwidth))
+data = [rec_all, prec_all, f1_all]
+labels = ["Recall", "Precision", "F1"]
+bp = ax.boxplot(data, patch_artist=True,
+                labels=labels,
+                boxprops=dict(facecolor="steelblue", color="steelblue"),
+                whiskerprops=dict(color="steelblue"),
+                capprops=dict(color="steelblue"),
+                medianprops=dict(color="orange", linewidth=1.5))
+for box in bp['boxes']:
+    box.set_facecolor("lightsteelblue")  
+ax.yaxis.set_ticks_position('none')
+ax.xaxis.set_ticks_position('none')
+ax.tick_params(axis='both', which='major', labelsize=12)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.spines["left"].set_visible(False)
+ax.spines["bottom"].set_visible(False)
+ax.grid(color='grey', axis='y', linestyle='-', linewidth=0.25, alpha=0.5)
+plt.savefig("Afbeeldingen\Boxplot evaluation baseine.pdf", format="pdf", bbox_inches='tight')
+
+
+# bad/good predictions
+f1_good = [i for i, x in enumerate(f1) if x > 0.9]     
+rec_good = [i for i, x in enumerate(rec) if x > 0.9]             
+prec_good = [i for i, x in enumerate(prec) if x > 0.9]
+
+f1_bad = [i for i, x in enumerate(f1) if x < 0.5]    
+rec_bad = [i for i, x in enumerate(rec) if x < 0.5]               
+prec_bad = [i for i, x in enumerate(prec) if x < 0.5]
+
+
+for index in f1_good:
+    image = images[index]
+    processed_image = baseline_processing(image, order_processing, processing_techniques)
+    plt.figure()
+    plt.subplot(1,2,1)
+    plt.imshow(image, cmap="gray")
+    plt.axis("off")
+    plt.subplot(1,2,2)
+    plt.imshow(processed_image, cmap="nipy_spectral")
+    plt.scatter(*zip(*positions_actual[index]),s=7, c="r", marker="x")
+    plt.scatter(*zip(*positions_predicted[index]),s=7, c="w", marker="x")
+    plt.axis("off")
 
 
 # IMAGE PRE-PROCESSING OPTIMALISATION/HYPERPARAMETER OPTIMALISATION
+
+# VISUAL OPTIMALISATION
+test_indices = [random.randint(0,len(images)-1) for i in range(5)]
+for i in test_indices:
+    test_image = images[i]
+    processed_image = baseline_processing(test_image, order_processing, processing_techniques)
+    plt.figure()
+    plt.subplot(1,2,1)
+    plt.imshow(test_image, cmap="gray")
+    plt.scatter(*zip(*positions_actual[i]),s=15, c="g")
+    plt.subplot(1,2,2)
+    plt.imshow(processed_image, cmap="nipy_spectral")
+    plt.scatter(*zip(*positions_actual[i]),s=15, c="g")
+    plt.scatter(*zip(*positions_predicted[i]),s=15, c="r")
         
 # selection of test images
-names = external_id(Data_ANNOTATED, PROJECT_ID)
+names = external_id(Data, PROJECT_ID)
 test_names = random.choices(names, k=5)
 file_images = "ALL_Images"
 test_images = list(os.path.join(file_images, test_names[i]) for i in range(len(test_names)))
@@ -246,69 +319,66 @@ for i in range(len(test_images)):
     print(len(chromosomes_feats))
 
 
-# IMAGES FOR THESIS
-    
-# plot image
-im = io.imread("ALL_Images\Agapanthus_Snap-55.jpg")[:, :, 0]
-plt.figure()
-plt.imshow(im, cmap="gray")
-plt.axis("off")
+##############################################################################
+# images for thesis
+##############################################################################
 
-# image after unsharp masking filter and median filter
-im_uf = filters.unsharp_mask(im, 3)
-plt.figure()
-plt.imshow(im_uf, cmap="gray")
-plt.axis("off")
-im_uf_mf = filters.median(im_uf)
-plt.figure()
-plt.imshow(im_uf_mf, cmap="gray")
-plt.axis("off")
+for i in range(len(images)):
+    image = images[i]
+    plt.imsave(os.path.join("Afbeeldingen\Test images",str(i)+".png"), arr=image, cmap="gray", format="png")
+
+
+# pipeline baseline method
+image = images[115]
+
+# image after unsharp masking filter 
+im_uf = filters.unsharp_mask(image,radius=30.0)
+plt.imsave(os.path.join("Afbeeldingen\Baseline","Unsharp masking.png"), arr=im_uf, cmap="gray", format="png")
 
 # image after Otsu thresholding
-th_otsu = filters.threshold_otsu(im_uf_mf)
-chromosomes = (im_uf_mf > th_otsu)
-
-# histogram with threshold
-n_pixels , intensiteiten = exposure . histogram (im_uf_mf)
-plt.figure()
-plt.imshow(chromosomes, cmap="gray")
-plt.axis("off")
-plt.figure()
-plt. plot ( intensiteiten , n_pixels )
-plt. ylim ( ymin = 0 )
-plt. xlabel (" Intensity ")
-plt. ylabel (" Number of pixels ")
-plt. tight_layout ()
-plt.axvline(x = th_otsu, color = 'r', label = 'axvline - full height')
+th_otsu = filters.threshold_otsu(im_uf)
+chromosomes = (im_uf > th_otsu)
+plt.imsave(os.path.join("Afbeeldingen\Baseline","Otsu thresholding.png"), arr=chromosomes, cmap="gray", format="png")
 
 # image after erosion and opening
-chromosomes_e = morph.erosion(chromosomes)
-plt.figure()
-plt.imshow(chromosomes_e, cmap="gray")
-plt.axis("off")
-chromosomes_oe = morph.opening(chromosomes_e) 
-plt.figure()
-plt.imshow(chromosomes_oe, cmap="gray")
-plt.axis("off")    
-
+chromosomes_e = morph.erosion(chromosomes, footprint=morph.square(9))
+chromosomes_oe = morph.opening(chromosomes_e, footprint=morph.square(11)) 
+plt.imsave(os.path.join("Afbeeldingen\Baseline","Morphological operations.png"), arr=chromosomes_oe, cmap="gray", format="png")
+   
 # image after labelling   
 chromosomes_labelled = measure.label(chromosomes_oe, background=0)
-plt.figure()
-plt.imshow(chromosomes_labelled, cmap="nipy_spectral")
-plt.axis("off")    
+plt.imsave(os.path.join("Afbeeldingen\Baseline","Labelling.png"), arr=chromosomes_labelled, cmap="nipy_spectral", format="png")
 
-# Otsu thresholding
-im = io.imread("image_thresholding_Agapanthus_Snap-55.jpg")[:, :, 0]
+# image with predictions
+plt.figure(figsize=(2688,2048))
+plt.imshow(np.zeros((2048,2688)), cmap="gray")
+plt.scatter(*zip(*positions_predicted[115]),s=300, c="w", marker="X")
+plt.axis("off")
+plt.tight_layout()
+plt.savefig(os.path.join("Afbeeldingen\Baseline","Prediction.png"), format="png", bbox_inches='tight', pad_inches=0)
+
+
+#otsu thresholding
+im = io.imread("Afbeeldingen\Otsu thresholding\image_thresholding_Agapanthus_Snap-55.jpg")[:, :, 0]
 th_otsu = filters.threshold_otsu(im)
 chromosomes = (im> th_otsu)
-n_pixels , intensiteiten = exposure . histogram (im)
+n_pixels , intensiteiten = exposure.histogram (im)
+
+plt.figure(figsize=(set_size(textwidth, fraction=0.7)[0],set_size(textwidth, fraction=0.7)[0]))
+plt.plot(intensiteiten , n_pixels, color='steelblue' )
+plt.axvline(x = th_otsu, color = 'darkorange', label = 'axvline - full height')
+plt.ylim(ymin = 0 )
+plt.xlabel("Intensity ", size=11)
+plt.ylabel("Number of pixels ", size=11)
+plt.savefig(os.path.join("Afbeeldingen\Otsu thresholding","Histogram.pdf"), format="pdf", bbox_inches='tight')
+plt.imsave(os.path.join("Afbeeldingen\Otsu thresholding","Thresholded image.pdf"),arr=chromosomes, cmap="gray", format="pdf")
 
 plt.figure()
 plt.subplot2grid((2, 3), (0, 0), rowspan=2, colspan=2)
-plt.plot ( intensiteiten , n_pixels, color='steelblue' )
-plt.ylim ( ymin = 0 )
-plt.xlabel (" Intensity ", size=12)
-plt.ylabel (" Number of pixels ", size=12)
+plt.plot(intensiteiten , n_pixels, color='steelblue' )
+plt.ylim(ymin = 0 )
+plt.xlabel(" Intensity ", size=12)
+plt.ylabel(" Number of pixels ", size=12)
 plt.title("A", fontsize=12, loc='left')
 plt.axvline(x = th_otsu, color = 'darkorange', label = 'axvline - full height')
 plt.subplot2grid((2, 3), (0, 2), rowspan=1, colspan=1) 
@@ -320,3 +390,47 @@ plt.imshow(chromosomes, cmap="gray")
 plt.axis("off")
 plt.title("C", fontsize=12, loc='left')
 plt.tight_layout()
+
+
+# bad predictions
+bad_predictions = [2,54,77,18]
+for index in bad_predictions:
+    plt.figure(figsize=(2688,2048))
+    image = images[index]
+    processed_image = baseline_processing(image, order_processing, processing_techniques)
+    plt.imshow(processed_image, cmap="nipy_spectral")
+    plt.scatter(*zip(*positions_actual[index]),s=150, c="gray")
+    plt.scatter(*zip(*positions_predicted[index]),s=200, c="w", marker="X")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.legend(["True chromosome","Predicted chromosome"], fontsize=25)
+    plt.savefig(os.path.join("Afbeeldingen\Bad predictions baseline","Prediction "+str(index)+".pdf"), format="pdf", bbox_inches='tight', pad_inches=0)
+    plt.imsave(os.path.join("Afbeeldingen\Bad predictions baseline","Original image "+str(index)+".pdf"), arr=image, cmap="gray", format="pdf")
+
+# real chromosome number = predicted chromosome number   
+indices_good = []
+for i in range(len(chromosome_number["Genus"])):
+    if chromosome_number["Actual chromosome number"][i] == chromosome_number["Predicted chromosome number"][i]:
+        indices_good.append(i)
+
+i = indices_good[1]
+actual_points = positions_actual[i]
+predicted_points = positions_predicted[i]
+image = images[i]
+processed_image = baseline_processing(image, order_processing, processing_techniques)
+
+figsize=(set_size(textwidth, fraction=0.49)[0], set_size(textwidth, fraction=0.49)[0]*(2048/2688))
+
+plt.figure(figsize=(2048,2688))
+plt.imshow(image, cmap="gray")
+plt.scatter(*zip(*actual_points),s=100, c="orange")
+plt.axis("off")
+plt.legend(["True chromosome"], fontsize="25")
+plt.savefig(os.path.join("Afbeeldingen\Predictions baseline","Actual positions "+str(i)+".pdf"), format="pdf", bbox_inches='tight', pad_inches=0)
+plt.figure(figsize=(2048,2688))
+plt.imshow(processed_image, cmap="nipy_spectral")
+plt.scatter(*zip(*predicted_points),s=100, c="w", marker="X")
+plt.axis("off")
+plt.legend(["Predicted chromosome"], fontsize="25")
+plt.savefig(os.path.join("Afbeeldingen\Predictions baseline","Predicted positions "+str(i)+".pdf"), format="pdf", bbox_inches='tight', pad_inches=0)
+        
