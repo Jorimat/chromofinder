@@ -191,6 +191,12 @@ for i in range(len(Data)):
 # Remove image with abnormal size
 Data = remove_image(Data,1273,947)
 
+# Save data
+#---
+# Real annotations without images with abnormal size, replicates
+with open("Data.pkl", 'wb') as file:
+    pickle.dump(Data, file)
+
   
 ## Determine the distribution of the images across the genera
 ###
